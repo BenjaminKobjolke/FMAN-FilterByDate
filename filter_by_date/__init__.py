@@ -287,3 +287,45 @@ class DateFilterFileSystem(FileSystem):
                 raise UnsupportedOperation()
         else:
             raise UnsupportedOperation()
+
+    def stat(self, path):
+        import urllib.parse
+
+        # Parse path like "30/e%3A%2Fdownloads/file.txt"
+        parts = path.split('/', 2)
+
+        if len(parts) >= 2 and parts[0] in ['0', '3', '7', '30']:
+            base_path = urllib.parse.unquote(parts[1])
+
+            if len(parts) == 3:
+                # A file in the filtered directory
+                file_name = parts[2]
+                full_path = os.path.join(base_path, file_name)
+                return os.stat(full_path)
+            elif len(parts) == 2:
+                # The filtered directory itself
+                return os.stat(base_path)
+
+        # Return a dummy stat for the root
+        return os.stat('.')
+
+    def samefile(self, path1, path2):
+        import urllib.parse
+
+        # Extract real paths from both URLs
+        def get_real_path(path):
+            parts = path.split('/', 2)
+            if len(parts) >= 2 and parts[0] in ['0', '3', '7', '30']:
+                base_path = urllib.parse.unquote(parts[1])
+                if len(parts) == 3:
+                    return os.path.join(base_path, parts[2])
+                return base_path
+            return path
+
+        real_path1 = get_real_path(path1)
+        real_path2 = get_real_path(path2)
+
+        try:
+            return os.path.samefile(real_path1, real_path2)
+        except (OSError, ValueError):
+            return real_path1 == real_path2
