@@ -127,16 +127,8 @@ class DateFilterFileSystem(FileSystem):
             return self.scheme + path
 
         if len(parts) >= 2 and parts[0] in ['0', '3', '7', '30']:
-            base_path = urllib.parse.unquote(parts[1])
-
-            if len(parts) == 2:
-                # Root of filtered directory
-                return self.scheme + path
-
-            if len(parts) == 3:
-                # A file in the filtered directory
-                file_name = parts[2]
-                return as_url(os.path.join(base_path, file_name))
+            # Always keep files within our custom scheme so our methods are used
+            return self.scheme + path
 
         return super().resolve(path)
 
@@ -273,16 +265,40 @@ class DateFilterFileSystem(FileSystem):
     def move(self, src_url, dst_url):
         import urllib.parse
         src_scheme, src_path = splitscheme(src_url)
+        dst_scheme, dst_path = splitscheme(dst_url)
 
         if src_scheme == self.scheme:
-            # Parse path like "30/e%3A%2Fdownloads/file.txt"
-            parts = src_path.split('/', 2)
+            # Parse source path like "30/e%3A%2Fdownloads/file.txt"
+            src_parts = src_path.split('/', 2)
 
-            if len(parts) >= 3 and parts[0] in ['0', '3', '7', '30']:
-                base_path = urllib.parse.unquote(parts[1])
-                file_name = parts[2]
-                real_src = as_url(os.path.join(base_path, file_name))
-                fman.fs.move(real_src, dst_url)
+            if len(src_parts) >= 3 and src_parts[0] in ['0', '3', '7', '30']:
+                base_path = urllib.parse.unquote(src_parts[1])
+                file_name = src_parts[2]
+                real_src = os.path.join(base_path, file_name)
+
+                # Check if this is a rename within the same filtered directory
+                if dst_scheme == self.scheme:
+                    dst_parts = dst_path.split('/', 2)
+                    if (len(dst_parts) >= 3 and dst_parts[0] == src_parts[0] and
+                        dst_parts[1] == src_parts[1]):
+                        # Same directory, just different filename - this is a rename
+                        new_file_name = dst_parts[2]
+                        real_dst = os.path.join(base_path, new_file_name)
+
+                        # Perform the actual rename
+                        try:
+                            os.rename(real_src, real_dst)
+                            # File renamed successfully
+                            # Note: User needs to press F5 to refresh the view
+                        except Exception as e:
+                            raise UnsupportedOperation(f"Rename failed: {str(e)}")
+                    else:
+                        # Moving to a different filtered directory - not supported
+                        raise UnsupportedOperation("Cannot move between different filtered views")
+                else:
+                    # Moving to a regular directory
+                    real_src_url = as_url(real_src)
+                    fman.fs.move(real_src_url, dst_url)
             else:
                 raise UnsupportedOperation()
         else:
@@ -301,13 +317,108 @@ class DateFilterFileSystem(FileSystem):
                 # A file in the filtered directory
                 file_name = parts[2]
                 full_path = os.path.join(base_path, file_name)
-                return os.stat(full_path)
+                try:
+                    return os.stat(full_path)
+                except FileNotFoundError:
+                    # File doesn't exist yet (might be checking for a rename target)
+                    # Return None to indicate file doesn't exist
+                    raise
             elif len(parts) == 2:
                 # The filtered directory itself
                 return os.stat(base_path)
 
         # Return a dummy stat for the root
         return os.stat('.')
+
+    def exists(self, path):
+        import urllib.parse
+
+        # Parse path like "30/e%3A%2Fdownloads/file.txt"
+        parts = path.split('/', 2)
+
+        if len(parts) >= 2 and parts[0] in ['0', '3', '7', '30']:
+            base_path = urllib.parse.unquote(parts[1])
+
+            if len(parts) == 3:
+                # A file in the filtered directory
+                file_name = parts[2]
+                full_path = os.path.join(base_path, file_name)
+                return os.path.exists(full_path)
+            elif len(parts) == 2:
+                # The filtered directory itself
+                return os.path.exists(base_path)
+
+        return False
+
+    def touch(self, path):
+        import urllib.parse
+
+        # Parse path like "30/e%3A%2Fdownloads/file.txt"
+        parts = path.split('/', 2)
+
+        if len(parts) >= 3 and parts[0] in ['0', '3', '7', '30']:
+            base_path = urllib.parse.unquote(parts[1])
+            file_name = parts[2]
+            full_path = os.path.join(base_path, file_name)
+
+            # Create the file
+            with open(full_path, 'a'):
+                os.utime(full_path, None)
+        else:
+            raise UnsupportedOperation("Cannot create file here")
+
+    def delete(self, path):
+        import urllib.parse
+
+        # Parse path like "30/e%3A%2Fdownloads/file.txt"
+        parts = path.split('/', 2)
+
+        if len(parts) >= 3 and parts[0] in ['0', '3', '7', '30']:
+            base_path = urllib.parse.unquote(parts[1])
+            file_name = parts[2]
+            full_path = os.path.join(base_path, file_name)
+
+            if os.path.isdir(full_path):
+                import shutil
+                shutil.rmtree(full_path)
+            else:
+                os.remove(full_path)
+        else:
+            raise UnsupportedOperation("Cannot delete this item")
+
+    def rename(self, src_path, new_name):
+        import urllib.parse
+
+        # Parse path like "30/e%3A%2Fdownloads/file.txt"
+        parts = src_path.split('/', 2)
+
+        if len(parts) >= 3 and parts[0] in ['0', '3', '7', '30']:
+            days = parts[0]
+            base_path = urllib.parse.unquote(parts[1])
+            old_file_name = parts[2]
+
+            # Construct real paths
+            old_full_path = os.path.join(base_path, old_file_name)
+            new_full_path = os.path.join(base_path, new_name)
+
+            # Check if source file exists
+            if not os.path.exists(old_full_path):
+                raise UnsupportedOperation(f"Source file does not exist: {old_full_path}")
+
+            # Check if target already exists
+            if os.path.exists(new_full_path):
+                raise UnsupportedOperation(f"Target file already exists: {new_full_path}")
+
+            # Perform the actual rename
+            try:
+                os.rename(old_full_path, new_full_path)
+                # Return the new path in our scheme format
+                encoded_base = urllib.parse.quote(base_path, safe='')
+                return f"{days}/{encoded_base}/{new_name}"
+            except Exception as e:
+                raise UnsupportedOperation(f"Rename failed: {str(e)}")
+        else:
+            raise UnsupportedOperation("Cannot rename this item")
 
     def samefile(self, path1, path2):
         import urllib.parse
@@ -324,6 +435,10 @@ class DateFilterFileSystem(FileSystem):
 
         real_path1 = get_real_path(path1)
         real_path2 = get_real_path(path2)
+
+        # If either file doesn't exist, they can't be the same
+        if not os.path.exists(real_path1) or not os.path.exists(real_path2):
+            return False
 
         try:
             return os.path.samefile(real_path1, real_path2)
